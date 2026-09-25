@@ -12,6 +12,9 @@ function fixture() {
     refreshToken: "refresh",
     refreshRequestId: "request"
   };
+  let authorization = "Bearer original-access";
+  const actionHooks = new Set();
+  const logoutCalls = [];
   let observed;
   let writes = 0;
   let epoch = 0;
@@ -44,10 +47,15 @@ function fixture() {
   const dependencies = {
     getConfig: () => ({ AuthProvider: "casdoor", RBACProvider: "casbin" }),
     setRefreshHandler: slot("refresh"),
+    setLogoutHandler: slot("logout"),
     setUserInfoHandler: slot("userInfo"),
     setLoginComponent: slot("login"),
     setAsyncRoutesProvider: slot("routes"),
     useUserStoreHook: () => ({
+      $onAction(callback) {
+        actionHooks.add(callback);
+        return () => actionHooks.delete(callback);
+      },
       endSession() {},
       async fetchUserInfo() {
         assert.equal(observed, token.sessionId);
@@ -58,7 +66,16 @@ function fixture() {
       token = value;
       writes++;
     },
-    setAuthToken() {},
+    getAuthToken: () => authorization,
+    setAuthToken(value) {
+      authorization = value;
+    },
+    logout: async (auth, data) => {
+      logoutCalls.push({
+        authorization: auth,
+        refreshToken: data.refreshToken
+      });
+    },
     userKey: "user-info",
     endAuthSessionIfCurrent: async id => {
       if (token?.sessionId === id) token = undefined;
@@ -153,6 +170,18 @@ function fixture() {
     listeners,
     dependencies,
     response,
+    actionHooks,
+    logoutCalls,
+    beginLogout() {
+      const callbacks = [];
+      for (const hook of actionHooks) {
+        hook({ name: "logOut", after: cb => callbacks.push(cb), onError() {} });
+      }
+      const refreshToken = token.refreshToken;
+      token = undefined;
+      authorization = undefined;
+      return { refreshToken, finish: () => callbacks.forEach(cb => cb()) };
+    },
     state: () => ({ token, observed, writes }),
     refresh: callback => {
       refreshResponse = callback;
@@ -276,4 +305,28 @@ test("an unmounted OAuth callback cannot commit late credentials", async () => {
   finish(f.response());
   await pending;
   assert.equal(f.state().writes, 0);
+});
+
+test("logout uses credentials captured before clearing, never a replacement session", async () => {
+  const f = fixture();
+  const previous = async () => {};
+  f.slots.logout = previous;
+  const auth = f.load("casdoor-auth/index.ts");
+  auth.setup();
+  const action = f.beginLogout();
+  assert.equal(f.state().token, undefined);
+  f.dependencies.setAuthToken("Bearer replacement-access");
+  f.dependencies.setToken({
+    sessionId: "new-session",
+    refreshToken: "new-refresh"
+  });
+  await f.slots.logout({ refreshToken: action.refreshToken });
+  action.finish();
+  assert.deepEqual(f.logoutCalls, [
+    { authorization: "Bearer original-access", refreshToken: "refresh" }
+  ]);
+  await assert.rejects(f.slots.logout({ refreshToken: action.refreshToken }));
+  auth.destroy();
+  assert.equal(f.actionHooks.size, 0);
+  assert.equal(f.slots.logout, previous);
 });

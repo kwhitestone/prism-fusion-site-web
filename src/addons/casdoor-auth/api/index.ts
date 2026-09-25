@@ -1,3 +1,8 @@
+import axios from "axios";
+import type {
+  CasdoorLogoutRequest,
+  CasdoorLogoutResponse
+} from "../../../../types/casdoor-auth";
 import service from "@/utils/request";
 
 const CASDOOR_AUTH_BASE = "/api/v1/addons/casdoor-auth";
@@ -55,4 +60,17 @@ export const getUserInfo = () => {
     method: "get",
     donNotShowLoading: true
   });
+};
+
+/** Explicit captured credentials bypass automatic refresh/storage rebinding. */
+export const logout = async (
+  authorization: string,
+  data: CasdoorLogoutRequest
+) => {
+  const response = await axios.post<CasdoorLogoutResponse>(
+    `${CASDOOR_AUTH_BASE}/logout`,
+    data,
+    { headers: { Authorization: authorization }, timeout: 10000 }
+  );
+  if (response.data?.code !== 0) throw new Error("服务端会话注销失败");
 };

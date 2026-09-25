@@ -1,16 +1,18 @@
 import type { PluginModule } from "prism-fusion-web/plugin";
 import {
   setRefreshHandler,
+  setLogoutHandler,
   setUserInfoHandler,
   useUserStoreHook
 } from "@/store/modules/user";
 import { setLoginComponent } from "@/store/modules/loginUI";
 import { getConfig } from "@/config";
-import { refreshToken as refreshTokenApi, getUserInfo } from "./api";
+import { refreshToken as refreshTokenApi, getUserInfo, logout } from "./api";
 import {
   setToken,
   setAuthToken,
   getToken,
+  getAuthToken,
   userKey,
   endAuthSessionIfCurrent
 } from "@/utils/auth";
@@ -80,6 +82,30 @@ const casdoorAuthPlugin: PluginModule = {
     };
     window.addEventListener("storage", onStorage);
     disposers.push(() => window.removeEventListener("storage", onStorage));
+
+    // The vendor clears storage before invoking its logout handler. Capture the
+    // credential at action entry, and keep it scoped to that refresh generation.
+    const logoutCredentials = new Map<string, string>();
+    disposers.push(() => logoutCredentials.clear());
+    disposers.push(
+      useUserStoreHook().$onAction(({ name, after, onError }) => {
+        if (name !== "logOut") return;
+        const refresh = getToken()?.refreshToken;
+        const authorization = getAuthToken();
+        if (!refresh || !authorization) return;
+        logoutCredentials.set(refresh, authorization);
+        const clear = () => logoutCredentials.delete(refresh);
+        after(clear);
+        onError(clear);
+      }, true)
+    );
+    disposers.push(
+      setLogoutHandler(async ({ refreshToken }) => {
+        const authorization = logoutCredentials.get(refreshToken);
+        if (!authorization) throw new Error("注销凭据不可用");
+        await logout(authorization, { refreshToken });
+      })
+    );
 
     // 注册登录界面组件："使用 Casdoor 登录" 按钮
     disposers.push(setLoginComponent(CasdoorLogin));
